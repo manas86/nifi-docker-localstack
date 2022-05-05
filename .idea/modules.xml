@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/dockerhub/dockerhub.iml" filepath="$PROJECT_DIR$/dockerhub/dockerhub.iml" />
+      <module fileurl="file://$PROJECT_DIR$/dockermaven/dockermaven.iml" filepath="$PROJECT_DIR$/dockermaven/dockermaven.iml" />
+      <module fileurl="file://$PROJECT_DIR$/nifi-docker.iml" filepath="$PROJECT_DIR$/nifi-docker.iml" />
+    </modules>
+  </component>
+</project>

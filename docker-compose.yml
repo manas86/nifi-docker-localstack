@@ -1,0 +1,142 @@
+version: '2.1'
+# https://docs.docker.com/compose/compose-file/compose-file-v2/#healthcheck
+services:
+  # Initiating localstack
+  local-stack-endpoints:
+    container_name: "${LOCALSTACK_DOCKER_NAME-localstack}"
+    image: swfactory.aegon.com:5001/dlk/realtime-sdc-e2e-test-base-images:localstack-1.0.42
+    hostname: localstack
+    logging:
+      driver: ${STF_LOGGING}
+    environment:
+      SERVICES: s3,sqs,ec2,dynamodb,sns
+      EDGE_PORT: 443 # Added EDGE_PORT for simulation for real aws endpoint call inside streamset container service
+      COMPOSE_HTTP_TIMEOUT: 120
+      DEBUG: 1
+      DATA_DIR: /tmp/localstack/data
+      PORT_WEB_UI: 8080
+      DOCKER_HOST: unix:///var/run/docker.sock
+      AWS_ACCESS_KEY_ID: dummyaccess
+      AWS_SECRET_ACCESS_KEY: dummysecret
+      AWS_DEFAULT_REGION: eu-west-1
+      HOSTNAME_EXTERNAL: localstack
+    volumes:
+      - ${PWD}/data:/tmp/localstack
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - ${PWD}/mockup_messages/:/mockup_messages/
+      - ${PWD}/publish_messages/:/docker-entrypoint-initaws.d/
+    networks:
+      my_awesome_network:
+        ipv4_address: "192.168.80.3"
+  # creating streamset container
+  setup-resources:
+    image: swfactory.aegon.com:5001/dlk/realtime-sdc-e2e-test-base-images:mesosphere-awscli-1.0.42
+    container_name: setup-resources
+    volumes:
+      - ${PWD}/dev_env:/project/dev_env
+    environment:
+      AWS_ACCESS_KEY_ID: dummyaccess
+      AWS_SECRET_ACCESS_KEY: dummysecret
+      AWS_DEFAULT_REGION: eu-west-1
+      EDGE_PORT: 443 # Has go match the value defined above for LocalStack
+      SDC_API_SQS_QUEUE_NAME: my_queue # Needs to match pub_blueprint-realtime-sdc-api_sqsQueueName in SDC properties/config.properties
+      SDC_API_SNS_TOPIC_NAME: my_topic # Needs to match pub_blueprint-realtime-sdc-api-fullload_snsTopicARN in SDC properties/config.properties
+      SDC_API_DYNAMO_TABLE_NAME: my_table # Needs to match pub_blueprint-realtime-sdc-api_dynamoTableName in SDC properties/config.properties
+    entrypoint: /bin/sh -c
+    command: >
+      "
+        sleep 10;
+        aws dynamodb create-table --endpoint-url=http://localstack:"$${EDGE_PORT}" --table-name "$${SDC_API_DYNAMO_TABLE_NAME}" \
+          --attribute-definitions AttributeName=partitionKey,AttributeType=S AttributeName=sortKey,AttributeType=S \
+          --key-schema AttributeName=partitionKey,KeyType=HASH AttributeName=sortKey,KeyType=RANGE \
+          --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5;
+        aws sqs create-queue --no-verify-ssl --endpoint-url=http://localstack:"$${EDGE_PORT}" --queue-name "$${SDC_API_SQS_QUEUE_NAME}";
+        aws sns create-topic --no-verify-ssl --endpoint-url=http://localstack:"$${EDGE_PORT}" --name "$${SDC_API_SNS_TOPIC_NAME}";
+        aws sns subscribe --protocol sqs --no-verify-ssl --topic-arn arn:aws:sns:eu-west-1:000000000000:"$${SDC_API_SNS_TOPIC_NAME}" \
+            --notification-endpoint http://localstack:"$${EDGE_PORT}"/000000000000/"$${SDC_API_SQS_QUEUE_NAME}" --endpoint-url=http://localstack:"$${EDGE_PORT}";
+        tail -f /dev/null
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "aws --endpoint-url=http://localstack:$${EDGE_PORT} sqs list-queues --region eu-west-1 || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      local-stack-endpoints:
+        condition: service_started
+    networks:
+      my_awesome_network:
+        ipv4_address: "192.168.80.7"
+  # setting up mysql client
+  mysql-resources:
+    image: swfactory.aegon.com:5001/dlk/realtime-sdc-e2e-test-base-images:mysql-1.0.42
+    container_name: mysql-resources
+    volumes:
+      - ${PWD}/mysql_data:/docker-entrypoint-initdb.d
+    ports:
+      - 3306:3306
+    tty: true
+    stdin_open: false
+    environment:
+      MYSQL_ROOT_USER: "root"
+      MYSQL_ROOT_PASSWORD: "super_secret_password!"
+      MYSQL_DATABASE: "anl_dlk_customer"
+      MYSQL_USER: "streamset"
+      MYSQL_PASSWORD: "again_super_secret_password"
+    healthcheck:
+      test: ["CMD-SHELL", 'mysql --database=$$MYSQL_DATABASE --password=$$MYSQL_ROOT_PASSWORD --execute="SELECT count(table_name) > 0 FROM information_schema.tables;" --skip-column-names -B']
+      interval: 30s
+      timeout: 10s
+      retries: 4
+    networks:
+      my_awesome_network:
+        ipv4_address: "192.168.80.2"
+  # Setting up nginx proxy pass configuration
+  nginx_proxy:
+    image: swfactory.aegon.com:5001/dlk/realtime-sdc-e2e-test-base-images:nginx-1.0.42
+    container_name: nginx
+    logging:
+      driver: ${STF_LOGGING}
+    ports:
+      - 80
+      - 443
+    healthcheck:
+      test: ["CMD-SHELL", "service nginx status || exit 1"]
+      retries: 3
+      interval: 60s
+      timeout: 10s
+    depends_on:
+      setup-resources:
+        condition: service_started
+      local-stack-endpoints:
+        condition: service_started
+    extra_hosts:
+      - "dynamodb.eu-west-1.amazonaws.com sns.eu-west-1.amazonaws.com sqs.eu-west-1.amazonaws.com:192.168.80.3"
+    networks:
+      my_awesome_network:
+        ipv4_address: "192.168.80.6"
+  nifi:
+    image: apache/nifi:latest
+    ports:
+      - 8443:8443 # Unsecured HTTP Web Port
+    environment:
+      - SINGLE_USER_CREDENTIALS_USERNAME=admin
+      - SINGLE_USER_CREDENTIALS_PASSWORD=admin123456789
+    volumes:
+      - ${PWD}/nifi/database_repository:/opt/nifi/nifi-current/database_repository
+      - ${PWD}/nifi/flowfile_repository:/opt/nifi/nifi-current/flowfile_repository
+      - ${PWD}/nifi/content_repository:/opt/nifi/nifi-current/content_repository
+      - ${PWD}/nifi/provenance_repository:/opt/nifi/nifi-current/provenance_repository
+      - ${PWD}/nifi/state:/opt/nifi/nifi-current/state
+      - ${PWD}/nifi/logs:/opt/nifi/nifi-current/log
+    networks:
+      my_awesome_network:
+        ipv4_address: "192.168.80.5"
+networks:
+  my_awesome_network:
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: "192.168.80.0/20"
+          gateway: "192.168.80.1"

@@ -1,0 +1,9 @@
+[
+  {
+    "header__timestamp": "Wed Jun 09 10:45:58 IST 2021",
+    "trigger_DOCUMENTID": 17761310,
+    "header__change_seq": "20210609094604000000000000013115601",
+    "header__operation": "UPDATE",
+    "trigger_objectkey": "{\"BASIC_DOSSIER_NUMBER\":null}"
+  }
+]
