@@ -1,5 +1,7 @@
 version: '2.1'
 # https://docs.docker.com/compose/compose-file/compose-file-v2/#healthcheck
+# For all the images in realtime-sdc-e2e-test-base-images
+# refer https://github.com/manas86/aegon-artifact-repo
 services:
   # Initiating localstack
   local-stack-endpoints:
